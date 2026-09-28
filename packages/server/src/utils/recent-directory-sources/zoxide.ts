@@ -3,14 +3,20 @@ import { accessSync, constants, statSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { z } from "zod";
+import { createExternalProcessEnv } from "../../server/paseo-env.js";
 import { isPathInsideRoot } from "../path.js";
 import type { RecentDirectorySource, RecentDirectorySourceLogger } from "./index.js";
 
-export interface ZoxideRecentSourceConfig {
-  enabled?: boolean;
-  path?: string;
-  dataDir?: string;
-}
+export const ZoxideRecentSourceConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    path: z.string().min(1).optional(),
+    dataDir: z.string().min(1).optional(),
+  })
+  .strict();
+
+export type ZoxideRecentSourceConfig = z.infer<typeof ZoxideRecentSourceConfigSchema>;
 
 interface ZoxideRecentSourceDeps {
   env?: NodeJS.ProcessEnv;
@@ -21,7 +27,8 @@ interface QueryResult {
   stdout: string;
 }
 
-const PROBE_TIMEOUT_MS = 1_000;
+// One-time startup probe: generous enough to absorb a cold process spawn under load.
+const PROBE_TIMEOUT_MS = 2_000;
 const QUERY_TIMEOUT_MS = 300;
 const CACHE_TTL_MS = 5_000;
 const CACHE_MAX_ENTRIES = 64;
@@ -127,7 +134,7 @@ export class ZoxideRecentDirectorySource implements RecentDirectorySource {
   constructor(config: ZoxideRecentSourceConfig = {}, deps: ZoxideRecentSourceDeps = {}) {
     this.disabled = config.enabled === false;
     this.configuredBinary = config.path;
-    this.env = { ...(deps.env ?? process.env) };
+    this.env = createExternalProcessEnv(deps.env ?? process.env);
     this.logger = deps.logger;
     const dataDir = resolveZoxideDataDir(config.dataDir, this.env);
     if (dataDir) this.env._ZO_DATA_DIR = dataDir;

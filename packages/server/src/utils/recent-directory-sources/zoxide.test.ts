@@ -156,6 +156,30 @@ describe("ZoxideRecentDirectorySource", () => {
     expect(existsSync(stub.captureFile)).toBe(false);
   });
 
+  it("strips daemon runtime-control variables from the zoxide process", async () => {
+    const binary = path.join(stubDir, "zoxide-env");
+    const capture = path.join(stubDir, "env-capture.txt");
+    writeFileSync(
+      binary,
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "--version" ]; then exit 0; fi',
+        `printf '%s' "$PASEO_SUPERVISED|$PASEO_TEST_MARKER" > "${capture}"`,
+        "exit 0",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(binary, 0o755);
+    const source = new ZoxideRecentDirectorySource(
+      { path: binary },
+      { env: { ...process.env, PASEO_SUPERVISED: "1", PASEO_TEST_MARKER: "kept" } },
+    );
+
+    await source.query({ query: "repo", root, limit: 10 });
+
+    expect(readFileSync(capture, "utf8")).toBe("|kept");
+  });
+
   it("logs the matched directories so the daemon log shows zoxide was used", async () => {
     const matched = path.join(root, "projects", "hertzbeat");
     mkdirSync(matched, { recursive: true });

@@ -459,6 +459,8 @@ export interface SessionOptions {
   pushNotifications: PushNotifications;
   paseoHome: string;
   worktreesRoot?: string;
+  // Home directory searched in home mode; injectable for tests, defaults to the process HOME.
+  homeDirectory?: string;
   // Injected so tests can substitute a stub recent-directory source; defaults to reading the
   // daemon's `search.recentSources` config.
   recentDirectorySources?: readonly RecentDirectorySource[];
@@ -662,6 +664,10 @@ function workspaceLabelErrorCode(error: unknown): string {
   return "workspace_label_failed";
 }
 
+function resolveHomeDirectory(override: string | undefined): string {
+  return override ?? process.env.HOME ?? homedir();
+}
+
 function resolveRecentDirectorySources(
   override: readonly RecentDirectorySource[] | undefined,
   paseoHome: string,
@@ -728,6 +734,7 @@ export class Session {
     | null;
   private readonly sessionLogger: pino.Logger;
   private readonly paseoHome: string;
+  private readonly homeDirectory: string;
   private readonly recentDirectorySources: readonly RecentDirectorySource[];
   private readonly projectIcons: ProjectIconReader;
   private readonly worktreesRoot: string | undefined;
@@ -899,6 +906,7 @@ export class Session {
       paseoHome,
       this.sessionLogger,
     );
+    this.homeDirectory = resolveHomeDirectory(options.homeDirectory);
     this.workspaceFilesSession = new WorkspaceFilesSession({
       host: {
         emit: (msg, source) => this.emitForSource(msg, source),
@@ -5065,7 +5073,7 @@ export class Session {
       const workspaceCwd = cwd?.trim();
       const searchesWorkspace = Boolean(workspaceCwd);
       const options: SearchDirectoryEntriesOptions = {
-        root: workspaceCwd ? expandTilde(workspaceCwd) : (process.env.HOME ?? homedir()),
+        root: workspaceCwd ? expandTilde(workspaceCwd) : this.homeDirectory,
         query,
         pathFormat: searchesWorkspace ? "relative" : "absolute",
         pathQueryPolicy: searchesWorkspace ? "slashes" : "rooted",

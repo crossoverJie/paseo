@@ -2,13 +2,13 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { SessionOutboundMessage } from "@getpaseo/protocol/messages";
+import type { SessionInboundMessage, SessionOutboundMessage } from "@getpaseo/protocol/messages";
 
 import { Session, type SessionOptions } from "./session.js";
 import { OWNER_PERMISSIONS } from "./authorization/index.js";
 import type { RecentDirectorySource } from "../utils/recent-directory-sources/index.js";
 import { createNoopWorkspaceGitService } from "./test-utils/workspace-git-service-stub.js";
-import { asInternals, createStub } from "./test-utils/class-mocks.js";
+import { createStub } from "./test-utils/class-mocks.js";
 import {
   createMessageReceiptsStub,
   createProviderSnapshotManagerStub,
@@ -20,7 +20,10 @@ interface Harness {
   emitted: SessionOutboundMessage[];
 }
 
-function createHarness(recentDirectorySources: readonly RecentDirectorySource[]): Harness {
+function createHarness(
+  recentDirectorySources: readonly RecentDirectorySource[],
+  homeDirectory: string,
+): Harness {
   const emitted: SessionOutboundMessage[] = [];
   const logger = {
     child: () => logger,
@@ -37,6 +40,7 @@ function createHarness(recentDirectorySources: readonly RecentDirectorySource[])
     clientId: "test",
     permissions: OWNER_PERMISSIONS,
     appVersion: null,
+    homeDirectory,
     onMessage: (m) => emitted.push(m),
     logger: createStub<SessionOptions["logger"]>(logger),
     downloadTokenStore: createStub<SessionOptions["downloadTokenStore"]>({}),
@@ -104,16 +108,17 @@ async function requestSuggestions(
   emitted: SessionOutboundMessage[],
   request: { query: string; limit?: number; requestId: string },
 ): Promise<Extract<SessionOutboundMessage, { type: "directory_suggestions_response" }>["payload"]> {
-  await asInternals<{ handleMessage(m: unknown): Promise<unknown> }>(session).handleMessage({
+  const message: SessionInboundMessage = {
     type: "directory_suggestions_request",
     includeFiles: false,
     includeDirectories: true,
     ...request,
-  });
+  };
+  await session.handleMessage(message);
   const response = emitted.find(
-    (message) =>
-      message.type === "directory_suggestions_response" &&
-      message.payload.requestId === request.requestId,
+    (outbound) =>
+      outbound.type === "directory_suggestions_response" &&
+      outbound.payload.requestId === request.requestId,
   );
   if (!response || response.type !== "directory_suggestions_response") {
     throw new Error("no directory_suggestions_response emitted");
@@ -126,24 +131,24 @@ describe("Session directory suggestions with a recent source", () => {
 
   beforeEach(() => {
     home = realpathSync.native(mkdtempSync(path.join(tmpdir(), "paseo-directory-home-")));
-    mkdirSync(path.join(home, "a", "hertzbeat"), { recursive: true });
+    mkdirSync(path.join(home, "OrbStack", "docker", "containers", "syncthing", "hertzbeat"), {
+      recursive: true,
+    });
     mkdirSync(path.join(home, "Documents", "dev", "github", "hertzbeat"), { recursive: true });
-    vi.stubEnv("HOME", home);
   });
 
   afterEach(() => {
-    vi.unstubAllEnvs();
     rmSync(home, { recursive: true, force: true });
   });
 
-  test("puts a visited directory ahead of an equal-strength scan match", async () => {
+  test("ranks a visited directory ahead of a weaker same-tier scan match", async () => {
     const visited = path.join(home, "Documents", "dev", "github", "hertzbeat");
     const source: RecentDirectorySource = {
       id: "stub",
       isAvailable: () => true,
       query: async () => [visited],
     };
-    const { session, emitted } = createHarness([source]);
+    const { session, emitted } = createHarness([source], home);
 
     const payload = await requestSuggestions(session, emitted, {
       query: "hertzbeat",
@@ -156,8 +161,27 @@ describe("Session directory suggestions with a recent source", () => {
     expect(payload.directories[0]).toBe(visited);
   });
 
+  test("keeps a better-ranked scan match ahead of a same-tier visited one", async () => {
+    mkdirSync(path.join(home, "hertzbeat"), { recursive: true });
+    const visited = path.join(home, "Documents", "dev", "github", "hertzbeat");
+    const source: RecentDirectorySource = {
+      id: "stub",
+      isAvailable: () => true,
+      query: async () => [visited],
+    };
+    const { session, emitted } = createHarness([source], home);
+
+    const payload = await requestSuggestions(session, emitted, {
+      query: "hertzbeat",
+      limit: 20,
+      requestId: "req-rank",
+    });
+
+    expect(payload.entries[0]).toEqual({ path: path.join(home, "hertzbeat"), kind: "directory" });
+  });
+
   test("returns only scan results when no recent source is configured", async () => {
-    const { session, emitted } = createHarness([]);
+    const { session, emitted } = createHarness([], home);
 
     const payload = await requestSuggestions(session, emitted, {
       query: "hertzbeat",
@@ -168,7 +192,7 @@ describe("Session directory suggestions with a recent source", () => {
     expect(payload.error).toBeNull();
     expect(payload.directories).toEqual(
       expect.arrayContaining([
-        path.join(home, "a", "hertzbeat"),
+        path.join(home, "OrbStack", "docker", "containers", "syncthing", "hertzbeat"),
         path.join(home, "Documents", "dev", "github", "hertzbeat"),
       ]),
     );

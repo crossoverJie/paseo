@@ -9,6 +9,7 @@ import {
 } from "./agent/provider-launch-config.js";
 import type { AgentProviderRuntimeSettingsMap } from "./agent/provider-launch-config.js";
 import { ensurePrivateFile, writePrivateFileAtomicSync } from "./private-files.js";
+import { ZoxideRecentSourceConfigSchema } from "../utils/recent-directory-sources/zoxide.js";
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "@getpaseo/protocol/agent-profile";
 import { PluginIdSchema, PluginSourceSchema } from "@getpaseo/protocol/plugin-config";
 import { TerminalProfileSchema } from "@getpaseo/protocol/terminal-profile";
@@ -331,14 +332,7 @@ export const PersistedConfigSchema = z
       .object({
         recentSources: z
           .object({
-            zoxide: z
-              .object({
-                enabled: z.boolean().optional(),
-                path: z.string().min(1).optional(),
-                dataDir: z.string().min(1).optional(),
-              })
-              .strict()
-              .optional(),
+            zoxide: ZoxideRecentSourceConfigSchema.optional(),
           })
           .strict()
           .optional(),

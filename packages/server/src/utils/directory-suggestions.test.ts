@@ -1077,8 +1077,11 @@ describe("mergeRecentDirectoryEntries", () => {
     return searchDirectoryEntries(homeOptions(query, overrides));
   }
 
-  it("moves a visited directory ahead of an equal-strength scan match", async () => {
-    const [shallow, visited] = makeDirectories("a/hertzbeat", "Documents/dev/github/hertzbeat");
+  it("ranks a visited directory ahead of a weaker same-tier scan match", async () => {
+    const [mirror, visited] = makeDirectories(
+      "OrbStack/docker/containers/syncthing/hertzbeat",
+      "Documents/dev/github/hertzbeat",
+    );
 
     const merged = await mergeRecentDirectoryEntries(
       homeOptions("hertzbeat"),
@@ -1086,7 +1089,45 @@ describe("mergeRecentDirectoryEntries", () => {
       [visited],
     );
 
-    expect(merged.map((entry) => entry.path)).toEqual([visited, shallow]);
+    expect(merged.map((entry) => entry.path)).toEqual([visited, mirror]);
+  });
+
+  it("keeps a better-ranked scan match ahead of a same-tier visited one", async () => {
+    const [shallow, visited] = makeDirectories("hertzbeat", "Documents/dev/github/hertzbeat");
+
+    const merged = await mergeRecentDirectoryEntries(
+      homeOptions("hertzbeat"),
+      await scan("hertzbeat"),
+      [visited],
+    );
+
+    expect(merged.map((entry) => entry.path)).toEqual([shallow, visited]);
+  });
+
+  it("hides visited directories the scan would not discover", async () => {
+    const [hidden, ignored] = makeDirectories(".config/hertzbeat", "node_modules/hertzbeat");
+    const scanned = await scan("hertzbeat");
+
+    const merged = await mergeRecentDirectoryEntries(homeOptions("hertzbeat"), scanned, [
+      hidden,
+      ignored,
+    ]);
+
+    expect(merged).toEqual(scanned);
+  });
+
+  it("applies the requested suffix match mode to visited directories", async () => {
+    const [exactSuffix] = makeDirectories("projects/paseo");
+    const [fuzzyOnly] = makeDirectories("paseo-notes");
+
+    const merged = await mergeRecentDirectoryEntries(
+      homeOptions("paseo", { matchMode: "suffix" }),
+      await scan("paseo", { matchMode: "suffix" }),
+      [exactSuffix, fuzzyOnly],
+    );
+
+    expect(merged.map((entry) => entry.path)).toContain(exactSuffix);
+    expect(merged.map((entry) => entry.path)).not.toContain(fuzzyOnly);
   });
 
   it("keeps a stronger scan match ahead of a weaker visited one", async () => {
@@ -1101,13 +1142,13 @@ describe("mergeRecentDirectoryEntries", () => {
   });
 
   it("adds visited directories the scan budget never reached", async () => {
-    const [deep] = makeDirectories("deep/one/two/three/target");
+    const [deep] = makeDirectories("deep/one/two/three/checkout");
 
-    const scanned = await scan("target", { maxDepth: 2 });
+    const scanned = await scan("checkout", { maxDepth: 2 });
 
     expect(scanned.map((entry) => entry.path)).not.toContain(deep);
     const merged = await mergeRecentDirectoryEntries(
-      homeOptions("target", { maxDepth: 2 }),
+      homeOptions("checkout", { maxDepth: 2 }),
       scanned,
       [deep],
     );
