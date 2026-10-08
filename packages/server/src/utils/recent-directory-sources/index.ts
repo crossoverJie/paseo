@@ -10,7 +10,7 @@ export type { ZoxideRecentSourceConfig } from "./zoxide.js";
 export interface RecentDirectorySource {
   readonly id: string;
   isAvailable(): boolean;
-  query(input: { query: string; root: string; limit: number }): Promise<string[]>;
+  query(input: { query: string; root: string }): Promise<string[]>;
 }
 
 /** Minimal pino-compatible surface; the session logger satisfies it. */

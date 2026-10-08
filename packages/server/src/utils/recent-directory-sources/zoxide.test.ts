@@ -72,7 +72,7 @@ describe("ZoxideRecentDirectorySource", () => {
   function sourceWith(stub: StubScript, config: { enabled?: boolean } = {}) {
     return new ZoxideRecentDirectorySource(
       { path: stub.binary, ...config },
-      { env: { ...process.env } },
+      { env: { ...process.env }, probeTimeoutMs: 30_000, queryTimeoutMs: 30_000 },
     );
   }
 
@@ -87,12 +87,12 @@ describe("ZoxideRecentDirectorySource", () => {
       queryBody: `printf '%s\\n' '${inside}' '${missing}' '${outside}' 'relative/path' '${second}'`,
     });
 
-    const paths = await sourceWith(stub).query({ query: "hz", root, limit: 10 });
+    const paths = await sourceWith(stub).query({ query: "hz", root });
 
     expect(paths).toEqual([inside, second]);
   });
 
-  it("keeps frecency order and honours the limit", async () => {
+  it("returns every in-root match in frecency order (the merge applies the request limit)", async () => {
     const first = path.join(root, "one");
     const second = path.join(root, "two");
     const third = path.join(root, "three");
@@ -101,16 +101,16 @@ describe("ZoxideRecentDirectorySource", () => {
       queryBody: `printf '%s\\n' '${first}' '${second}' '${third}'`,
     });
 
-    const paths = await sourceWith(stub).query({ query: "o", root, limit: 2 });
+    const paths = await sourceWith(stub).query({ query: "o", root });
 
-    expect(paths).toEqual([first, second]);
+    expect(paths).toEqual([first, second, third]);
   });
 
   it("skips a blank query without spawning a probe", async () => {
     const stub = writeStubScript(stubDir, { queryBody: "exit 0" });
     const source = sourceWith(stub);
 
-    expect(await source.query({ query: "   ", root, limit: 10 })).toEqual([]);
+    expect(await source.query({ query: "   ", root })).toEqual([]);
     expect(source.isAvailable()).toBe(false);
   });
 
@@ -118,7 +118,7 @@ describe("ZoxideRecentDirectorySource", () => {
     const stub = writeStubScript(stubDir, { versionExitCode: 1 });
     const source = sourceWith(stub);
 
-    expect(await source.query({ query: "repo", root, limit: 10 })).toEqual([]);
+    expect(await source.query({ query: "repo", root })).toEqual([]);
     expect(source.isAvailable()).toBe(false);
   });
 
@@ -126,16 +126,19 @@ describe("ZoxideRecentDirectorySource", () => {
     const stub = writeStubScript(stubDir, { queryBody: "exit 3" });
     const source = sourceWith(stub);
 
-    expect(await source.query({ query: "repo", root, limit: 10 })).toEqual([]);
+    expect(await source.query({ query: "repo", root })).toEqual([]);
     expect(source.isAvailable()).toBe(true);
   });
 
   it("returns nothing when the query times out", async () => {
     const stub = writeStubScript(stubDir, { queryBody: "sleep 2" });
-    const source = sourceWith(stub);
+    const source = new ZoxideRecentDirectorySource(
+      { path: stub.binary },
+      { env: { ...process.env }, probeTimeoutMs: 30_000, queryTimeoutMs: 200 },
+    );
 
     const started = Date.now();
-    expect(await source.query({ query: "repo", root, limit: 10 })).toEqual([]);
+    expect(await source.query({ query: "repo", root })).toEqual([]);
     expect(Date.now() - started).toBeLessThan(1_500);
   });
 
@@ -143,7 +146,7 @@ describe("ZoxideRecentDirectorySource", () => {
     const stub = writeStubScript(stubDir, { queryBody: "exit 0" });
     const keyword = "a b'c";
 
-    await sourceWith(stub).query({ query: keyword, root, limit: 10 });
+    await sourceWith(stub).query({ query: keyword, root });
 
     expect(readFileSync(stub.captureFile, "utf8")).toBe(keyword);
   });
@@ -152,7 +155,7 @@ describe("ZoxideRecentDirectorySource", () => {
     const stub = writeStubScript(stubDir, { queryBody: "exit 0" });
     const source = sourceWith(stub, { enabled: false });
 
-    expect(await source.query({ query: "repo", root, limit: 10 })).toEqual([]);
+    expect(await source.query({ query: "repo", root })).toEqual([]);
     expect(existsSync(stub.captureFile)).toBe(false);
   });
 
@@ -172,10 +175,14 @@ describe("ZoxideRecentDirectorySource", () => {
     chmodSync(binary, 0o755);
     const source = new ZoxideRecentDirectorySource(
       { path: binary },
-      { env: { ...process.env, PASEO_SUPERVISED: "1", PASEO_TEST_MARKER: "kept" } },
+      {
+        env: { ...process.env, PASEO_SUPERVISED: "1", PASEO_TEST_MARKER: "kept" },
+        probeTimeoutMs: 30_000,
+        queryTimeoutMs: 30_000,
+      },
     );
 
-    await source.query({ query: "repo", root, limit: 10 });
+    await source.query({ query: "repo", root });
 
     expect(readFileSync(capture, "utf8")).toBe("|kept");
   });
@@ -187,10 +194,15 @@ describe("ZoxideRecentDirectorySource", () => {
     const info = vi.fn();
     const source = new ZoxideRecentDirectorySource(
       { path: stub.binary },
-      { env: { ...process.env }, logger: { debug: vi.fn(), info } },
+      {
+        env: { ...process.env },
+        logger: { debug: vi.fn(), info },
+        probeTimeoutMs: 30_000,
+        queryTimeoutMs: 30_000,
+      },
     );
 
-    await source.query({ query: "hertzbeat", root, limit: 10 });
+    await source.query({ query: "hertzbeat", root });
 
     expect(info).toHaveBeenCalledWith(
       expect.objectContaining({ source: "zoxide", query: "hertzbeat", count: 1, paths: [matched] }),

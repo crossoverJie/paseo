@@ -1108,6 +1108,19 @@ describe("mergeRecentDirectoryEntries", () => {
     expect(merged).toEqual(scanned);
   });
 
+  it("does not let a filtered-out visit consume the result limit", async () => {
+    const [ignored] = makeDirectories("node_modules/paseo");
+    const [valid] = makeDirectories("a/b/c/paseo");
+
+    const merged = await mergeRecentDirectoryEntries(
+      homeOptions("paseo", { limit: 1, maxDepth: 2 }),
+      await scan("paseo", { limit: 1, maxDepth: 2 }),
+      [ignored, valid],
+    );
+
+    expect(merged.map((entry) => entry.path)).toEqual([valid]);
+  });
+
   it("applies the requested suffix match mode to visited directories", async () => {
     const [exactSuffix] = makeDirectories("projects/paseo");
     const [fuzzyOnly] = makeDirectories("paseo-notes");

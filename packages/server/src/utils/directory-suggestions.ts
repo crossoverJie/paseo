@@ -134,6 +134,17 @@ function stat(target: string): Promise<Stats> {
   return sharedFilesystemCall(`stat:${target}`, () => fs.stat(target));
 }
 
+// Exposed to other recent-directory sources so their realpath/stat checks share the same two-slot
+// limit and pending-call de-duplication as the scan. A hung mount hit through a source must not
+// starve logging, project creation, or unrelated file operations.
+export function realpathShared(target: string): Promise<string> {
+  return realpath(target);
+}
+
+export function statShared(target: string): Promise<Stats> {
+  return stat(target);
+}
+
 export const WORKSPACE_SEARCH_HIDDEN_DIRECTORIES = [
   ".agents",
   ".claude",
@@ -934,10 +945,6 @@ function normalizeLimit(limit: number | undefined): number {
   const candidate =
     typeof limit === "number" && Number.isFinite(limit) ? Math.trunc(limit) : DEFAULT_LIMIT;
   return Math.max(1, Math.min(MAX_LIMIT, candidate));
-}
-
-export function normalizeDirectorySuggestionLimit(limit: number | undefined): number {
-  return normalizeLimit(limit);
 }
 
 function normalizeRelativePath(root: string, absolutePath: string): string {

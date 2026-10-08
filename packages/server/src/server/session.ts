@@ -217,7 +217,6 @@ import {
 import { expandTilde } from "../utils/path.js";
 import {
   mergeRecentDirectoryEntries,
-  normalizeDirectorySuggestionLimit,
   searchDirectoryEntries,
   WORKSPACE_SEARCH_HIDDEN_DIRECTORIES,
   type DirectorySuggestionEntry,
@@ -5143,13 +5142,10 @@ export class Session {
     scanned: DirectorySuggestionEntry[],
   ): Promise<DirectorySuggestionEntry[]> {
     if (this.recentDirectorySources.length === 0 || !options.query.trim()) return scanned;
-    const limit = normalizeDirectorySuggestionLimit(options.limit);
     const recentPaths: string[] = [];
     for (const source of this.recentDirectorySources) {
       try {
-        recentPaths.push(
-          ...(await source.query({ query: options.query, root: options.root, limit })),
-        );
+        recentPaths.push(...(await source.query({ query: options.query, root: options.root })));
       } catch (error) {
         this.sessionLogger.warn(
           { err: error, source: source.id },

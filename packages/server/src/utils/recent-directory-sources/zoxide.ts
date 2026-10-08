@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
-import { realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { createExternalProcessEnv } from "../../server/paseo-env.js";
+import { realpathShared, statShared } from "../directory-suggestions.js";
 import { isPathInsideRoot } from "../path.js";
 import type { RecentDirectorySource, RecentDirectorySourceLogger } from "./index.js";
 
@@ -21,6 +21,9 @@ export type ZoxideRecentSourceConfig = z.infer<typeof ZoxideRecentSourceConfigSc
 interface ZoxideRecentSourceDeps {
   env?: NodeJS.ProcessEnv;
   logger?: RecentDirectorySourceLogger;
+  // Timeouts are injectable so tests do not race a loaded machine; production uses the defaults.
+  probeTimeoutMs?: number;
+  queryTimeoutMs?: number;
 }
 
 interface QueryResult {
@@ -33,6 +36,10 @@ const QUERY_TIMEOUT_MS = 300;
 const CACHE_TTL_MS = 5_000;
 const CACHE_MAX_ENTRIES = 64;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
+// Upper bound on candidates returned to the caller. The merge filters (hidden/ignored/match mode)
+// and truncates to the request limit, so the source must not pre-truncate: a rejected top result
+// would otherwise consume a slot a valid checkout below it needed.
+const MAX_RESULTS = 100;
 
 // daemon processes launched by the packaged app do not inherit the login shell's PATH, so a
 // bare `zoxide` lookup is not enough. These are the install locations a PATH-less launch misses.
@@ -126,6 +133,8 @@ export class ZoxideRecentDirectorySource implements RecentDirectorySource {
   private readonly configuredBinary: string | undefined;
   private readonly env: NodeJS.ProcessEnv;
   private readonly logger: RecentDirectorySourceLogger | undefined;
+  private readonly probeTimeoutMs: number;
+  private readonly queryTimeoutMs: number;
   private resolvedBinary: string | null = null;
   private available: boolean | null = null;
   private probePromise: Promise<boolean> | null = null;
@@ -136,6 +145,8 @@ export class ZoxideRecentDirectorySource implements RecentDirectorySource {
     this.configuredBinary = config.path;
     this.env = createExternalProcessEnv(deps.env ?? process.env);
     this.logger = deps.logger;
+    this.probeTimeoutMs = deps.probeTimeoutMs ?? PROBE_TIMEOUT_MS;
+    this.queryTimeoutMs = deps.queryTimeoutMs ?? QUERY_TIMEOUT_MS;
     const dataDir = resolveZoxideDataDir(config.dataDir, this.env);
     if (dataDir) this.env._ZO_DATA_DIR = dataDir;
   }
@@ -144,21 +155,21 @@ export class ZoxideRecentDirectorySource implements RecentDirectorySource {
     return this.available === true;
   }
 
-  async query(input: { query: string; root: string; limit: number }): Promise<string[]> {
+  async query(input: { query: string; root: string }): Promise<string[]> {
     if (this.disabled) return [];
     const keyword = input.query.trim();
     // Phase 1: frecency display for an empty query needs a client-side bare-query change, so the
     // recent source stays out of that path entirely.
-    if (!keyword || input.limit <= 0) return [];
+    if (!keyword) return [];
     const binary = await this.ensureAvailable();
     if (!binary) return [];
 
-    const cacheKey = `${input.root}\u0000${input.limit}\u0000${keyword}`;
+    const cacheKey = `${input.root}\u0000${keyword}`;
     const now = Date.now();
     const cached = this.cache.get(cacheKey);
     if (cached && cached.expiresAt > now) return cached.paths;
 
-    const paths = await this.runQuery(binary, keyword, input.root, input.limit);
+    const paths = await this.runQuery(binary, keyword, input.root);
     this.cache.set(cacheKey, { expiresAt: now + CACHE_TTL_MS, paths });
     pruneCache(this.cache);
     if (paths.length > 0) {
@@ -190,7 +201,7 @@ export class ZoxideRecentDirectorySource implements RecentDirectorySource {
       return false;
     }
     try {
-      await execFileAsync(binary, ["--version"], { timeout: PROBE_TIMEOUT_MS, env: this.env });
+      await execFileAsync(binary, ["--version"], { timeout: this.probeTimeoutMs, env: this.env });
       this.resolvedBinary = binary;
       this.logger?.info(
         { source: this.id, binary, dataDir: this.env._ZO_DATA_DIR ?? null },
@@ -206,20 +217,15 @@ export class ZoxideRecentDirectorySource implements RecentDirectorySource {
     }
   }
 
-  private async runQuery(
-    binary: string,
-    keyword: string,
-    root: string,
-    limit: number,
-  ): Promise<string[]> {
-    const resolvedRoot = await realpath(root).catch(() => path.resolve(root));
+  private async runQuery(binary: string, keyword: string, root: string): Promise<string[]> {
+    const resolvedRoot = await realpathShared(root).catch(() => path.resolve(root));
     let stdout: string;
     try {
       // `keyword` is a single argv element, never shell-interpolated: it comes from a client.
       const result = await execFileAsync(
         binary,
         ["query", "-l", "--base-dir", resolvedRoot, keyword],
-        { timeout: QUERY_TIMEOUT_MS, env: this.env },
+        { timeout: this.queryTimeoutMs, env: this.env },
       );
       stdout = result.stdout;
     } catch {
@@ -229,15 +235,17 @@ export class ZoxideRecentDirectorySource implements RecentDirectorySource {
     const paths: string[] = [];
     const seen = new Set<string>();
     for (const line of stdout.split("\n")) {
-      if (paths.length >= limit) break;
+      if (paths.length >= MAX_RESULTS) break;
       const candidate = line.trim();
       if (!candidate || !path.isAbsolute(candidate)) continue;
       // Canonicalize so paths line up with the scan, which walks the realpath'd root, and so a
-      // symlinked home (e.g. macOS `/var` -> `/private/var`) still passes containment.
-      const absolute = await realpath(candidate).catch(() => null);
+      // symlinked home (e.g. macOS `/var` -> `/private/var`) still passes containment. The
+      // realpath/stat go through the scan's shared filesystem limiter: a visited path on a hung
+      // mount must not take threadpool threads the rest of the daemon needs.
+      const absolute = await realpathShared(candidate).catch(() => null);
       if (!absolute || seen.has(absolute) || !isPathInsideRoot(resolvedRoot, absolute)) continue;
       seen.add(absolute);
-      const info = await stat(absolute).catch(() => null);
+      const info = await statShared(absolute).catch(() => null);
       if (!info?.isDirectory()) continue;
       paths.push(absolute);
     }
